@@ -36,7 +36,7 @@ public class File extends Explorer {
     private Long sizeInBytes;
     
     @Enumerated(EnumType.STRING)
-    @Column(name = "access_type", nullable = false)
+    @Column(name = "access_type")
     private AccessType accessType;
 
     @Column(name = "creator_name")

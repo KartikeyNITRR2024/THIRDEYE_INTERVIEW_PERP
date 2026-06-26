@@ -33,6 +33,8 @@ public class Initiator implements CommandLineRunner {
             rootFolder.setType(Type.FOLDER);
             rootFolder.setNoOfFiles(0);
             rootFolder.setNoOfFolders(0);
+            rootFolder.setViewCount(0L);
+            rootFolder.setDownloadCount(0L);
             folderRepository.save(rootFolder);
             log.info("ROOT folder initialized successfully.");
         } else {
