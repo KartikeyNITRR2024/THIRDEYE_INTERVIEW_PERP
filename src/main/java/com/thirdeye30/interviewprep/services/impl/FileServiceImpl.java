@@ -7,6 +7,7 @@ import com.thirdeye30.interviewprep.enums.ActionType;
 import com.thirdeye30.interviewprep.repositories.FileRepository;
 import com.thirdeye30.interviewprep.services.ExplorerService;
 import com.thirdeye30.interviewprep.services.FileService;
+import com.thirdeye30.interviewprep.services.FolderService;
 import com.thirdeye30.interviewprep.utils.Mapper;
 import com.thirdeye30.interviewprep.utils.Utils;
 
@@ -30,6 +31,7 @@ public class FileServiceImpl implements FileService {
 
     private final FileRepository fileRepository;
     private final ExplorerService explorerService;
+    private final FolderService folderService;
     private final Utils utils;
     
     private final RedisTemplate<String, Object> redisTemplate;
@@ -45,7 +47,6 @@ public class FileServiceImpl implements FileService {
     public FileDto createFile(FileUploadDto fileDto) {
         File file = Mapper.mapToEntity(fileDto);
         File savedFile = fileRepository.save(file);
-        log.info("Created new file with ID: {}", savedFile.getUuid());
         explorerService.recordAction(fileDto.getParentUuid(), ActionType.ADD_FILE);
         
         FileDto dto = Mapper.mapToDto(savedFile, savedFile.getInternalDocumentId() != null 
@@ -55,12 +56,13 @@ public class FileServiceImpl implements FileService {
         if (isRedisResponseCacheEnabled) {
             try {
                 redisTemplate.opsForValue().set(redisFilePrefix + savedFile.getUuid(), dto, cacheDuration);
-                log.info("Cached newly created file in Redis for key: {}", savedFile.getUuid());
             } catch (Exception e) {
                 log.error("Redis write failed during file creation for: {}", savedFile.getUuid(), e);
             }
         }
-
+        
+        folderService.evictParentPageCache(dto.getParentUuid());
+        
         return dto;
     }
 
@@ -72,7 +74,6 @@ public class FileServiceImpl implements FileService {
             try {
                 FileDto cachedDto = (FileDto) redisTemplate.opsForValue().get(cacheKey);
                 if (cachedDto != null) {
-                    log.info("Cache hit for file: {}", id);
                     return cachedDto;
                 }
             } catch (Exception e) {
@@ -80,7 +81,6 @@ public class FileServiceImpl implements FileService {
             }
         }
 
-        log.info("Cache miss or disabled for file: {}. Fetching from DB.", id);
         File file = fileRepository.findById(id)
                 .orElseThrow(() -> new EntityNotFoundException("File not found with ID: " + id));
                 
@@ -91,7 +91,6 @@ public class FileServiceImpl implements FileService {
         if (isRedisResponseCacheEnabled) {
             try {
                 redisTemplate.opsForValue().set(cacheKey, dto, cacheDuration);
-                log.info("Successfully cached file details in Redis for key: {}", id);
             } catch (Exception e) {
                 log.error("Failed to write file cache to Redis for key: {}", id, e);
             }
@@ -104,7 +103,7 @@ public class FileServiceImpl implements FileService {
     public List<FileDto> getAllFiles() {
         return fileRepository.findAll()
                 .stream()
-                .map(file ->  Mapper.mapToDto(file, file.getInternalDocumentId() != null 
+                .map(file -> Mapper.mapToDto(file, file.getInternalDocumentId() != null 
                         ? utils.documentUrlGenerator(file.getInternalDocumentId()) 
                         : file.getExternalUrl()))
                 .collect(Collectors.toList());
@@ -116,13 +115,17 @@ public class FileServiceImpl implements FileService {
         File existingFile = fileRepository.findById(id)
                 .orElseThrow(() -> new EntityNotFoundException("File not found with ID: " + id));
 
+        UUID oldParentUuid = existingFile.getParentUuid();
+
         existingFile.setName(fileDto.getName());
         existingFile.setParentUuid(fileDto.getParentUuid());
-        if(fileDto.getIsInternalDocumentId()) {
+        
+        if (fileDto.getIsInternalDocumentId()) {
             existingFile.setInternalDocumentId(fileDto.getInternalDocumentId());
         } else {
             existingFile.setExternalUrl(fileDto.getExternalUrl());
         }
+        
         existingFile.setFileType(fileDto.getFileType());
         existingFile.setSizeInBytes(fileDto.getSizeInBytes());
         existingFile.setAccessType(fileDto.getAccessType());
@@ -137,31 +140,36 @@ public class FileServiceImpl implements FileService {
         if (isRedisResponseCacheEnabled) {
             try {
                 redisTemplate.opsForValue().set(redisFilePrefix + id, dto, cacheDuration);
-                log.info("Updated cached file in Redis for key: {}", id);
             } catch (Exception e) {
                 log.error("Redis update failed for file: {}", id, e);
             }
         }
 
+        if (oldParentUuid != null && !oldParentUuid.equals(dto.getParentUuid())) {
+            folderService.evictParentPageCache(oldParentUuid);
+        }
+        folderService.evictParentPageCache(dto.getParentUuid());
+        
         return dto;
     }
 
     @Override
     @Transactional
     public void deleteFile(UUID id) {
-        if (!fileRepository.existsById(id)) {
-            throw new EntityNotFoundException("File not found with ID: " + id);
-        }
+        File existingFile = fileRepository.findById(id)
+                .orElseThrow(() -> new EntityNotFoundException("File not found with ID: " + id));
+        
+        UUID parentUuid = existingFile.getParentUuid();
         fileRepository.deleteById(id);
-        log.info("Deleted file with ID: {}", id);
 
         if (isRedisResponseCacheEnabled) {
             try {
                 redisTemplate.delete(redisFilePrefix + id);
-                log.info("Evicted file from Redis cache for key: {}", id);
             } catch (Exception e) {
                 log.error("Redis eviction failed for file: {}", id, e);
             }
         }
+
+        folderService.evictParentPageCache(parentUuid);
     }
 }

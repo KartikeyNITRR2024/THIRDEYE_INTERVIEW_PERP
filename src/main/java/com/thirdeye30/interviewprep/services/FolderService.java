@@ -19,4 +19,5 @@ public interface FolderService {
 	Page<ExplorerDto> getFolderContents(UUID parentUuid, Type typeFilter, Pageable pageable);
 	List<ExplorerDto> getFolderContents(UUID parentUuid);
 	Page<ExplorerDto> getRootContents(Type typeFilter, Pageable pageable);
+	void evictParentPageCache(UUID parentUuid);
 }

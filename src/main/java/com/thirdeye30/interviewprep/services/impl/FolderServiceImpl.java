@@ -48,16 +48,15 @@ public class FolderServiceImpl implements FolderService {
     private boolean isRedisResponseCacheEnabled;
 
     private final String redisFolderPrefix = "folder-service:folder:";
-    private final String redisFolderPagePrefix = "folder-service:pages:"; // Prefix for paginated data
+    private final String redisFolderPagePrefix = "folder-service:pages:";
     private final Duration cacheDuration = Duration.ofMinutes(30);
-    private final Duration pageCacheDuration = Duration.ofMinutes(5); // Shorter TTL for changing lists
+    private final Duration pageCacheDuration = Duration.ofMinutes(5);
 
     @Override
     @Transactional
     public FolderDto createFolder(FolderDto folderDto) {
         Folder folder = Mapper.mapToEntity(folderDto);
         Folder savedFolder = folderRepository.save(folder);
-        log.info("Created new folder with ID: {}", savedFolder.getUuid());
         explorerService.recordAction(folder.getParentUuid(), ActionType.ADD_FOLDER);
         
         FolderDto dto = Mapper.mapToDto(savedFolder);
@@ -65,11 +64,12 @@ public class FolderServiceImpl implements FolderService {
         if (isRedisResponseCacheEnabled) {
             try {
                 redisTemplate.opsForValue().set(redisFolderPrefix + savedFolder.getUuid(), dto, cacheDuration);
-                log.info("Cached newly created folder in Redis for key: {}", savedFolder.getUuid());
             } catch (Exception e) {
                 log.error("Redis write failed during folder creation for: {}", savedFolder.getUuid(), e);
             }
         }
+        
+        evictParentPageCache(dto.getParentUuid());
 
         return dto;
     }
@@ -82,7 +82,6 @@ public class FolderServiceImpl implements FolderService {
             try {
                 FolderDto cachedDto = (FolderDto) redisTemplate.opsForValue().get(cacheKey);
                 if (cachedDto != null) {
-                    log.info("Cache hit for folder: {}", id);
                     return cachedDto;
                 }
             } catch (Exception e) {
@@ -98,7 +97,6 @@ public class FolderServiceImpl implements FolderService {
         if (isRedisResponseCacheEnabled) {
             try {
                 redisTemplate.opsForValue().set(cacheKey, dto, cacheDuration);
-                log.info("Successfully cached folder details in Redis for key: {}", id);
             } catch (Exception e) {
                 log.error("Failed to write folder cache to Redis for key: {}", id, e);
             }
@@ -133,11 +131,12 @@ public class FolderServiceImpl implements FolderService {
         if (isRedisResponseCacheEnabled) {
             try {
                 redisTemplate.opsForValue().set(redisFolderPrefix + id, dto, cacheDuration);
-                log.info("Updated cached folder in Redis for key: {}", id);
             } catch (Exception e) {
                 log.error("Redis update failed for folder: {}", id, e);
             }
         }
+        evictParentPageCache(id);
+        evictParentPageCache(dto.getParentUuid());
 
         return dto;
     }
@@ -149,16 +148,16 @@ public class FolderServiceImpl implements FolderService {
             throw new EntityNotFoundException("Folder not found with ID: " + id);
         }
         folderRepository.deleteById(id);
-        log.info("Deleted folder with ID: {}", id);
 
         if (isRedisResponseCacheEnabled) {
             try {
                 redisTemplate.delete(redisFolderPrefix + id);
-                log.info("Evicted folder from Redis cache for key: {}", id);
             } catch (Exception e) {
                 log.error("Redis eviction failed for folder: {}", id, e);
             }
         }
+        
+        evictParentPageCache(id);
     }
     
     @Override
@@ -179,18 +178,15 @@ public class FolderServiceImpl implements FolderService {
     
     @Override
     public Page<ExplorerDto> getFolderContents(UUID parentUuid, Type typeFilter, Pageable pageable) {
-        // 1. Generate unique cache key based on parent, filter, and page configurations
         String typeStr = typeFilter != null ? typeFilter.name() : "ALL";
         String sortStr = pageable.getSort().isSorted() ? pageable.getSort().toString().replace(":", "-").replace(" ", "") : "UNSORTED";
         String cacheKey = String.format("%sparent:%s:type:%s:page:%d:size:%d:sort:%s", 
                 redisFolderPagePrefix, parentUuid, typeStr, pageable.getPageNumber(), pageable.getPageSize(), sortStr);
 
-        // 2. Cache Check
         if (isRedisResponseCacheEnabled) {
             try {
                 PageCacheWrapper cached = (PageCacheWrapper) redisTemplate.opsForValue().get(cacheKey);
                 if (cached != null) {
-                    log.info("Cache hit for paginated folder contents: {}", cacheKey);
                     return new PageImpl<>(cached.getContent(), pageable, cached.getTotalElements());
                 }
             } catch (Exception e) {
@@ -198,8 +194,6 @@ public class FolderServiceImpl implements FolderService {
             }
         }
 
-        // 3. DB Fetch
-        log.info("Cache miss. Fetching paginated contents from DB for folder: {}", parentUuid);
         Page<Explorer> explorerPage;
         if (typeFilter == null) {
             explorerPage = explorerRepository.findByParentUuid(parentUuid, pageable);
@@ -217,12 +211,10 @@ public class FolderServiceImpl implements FolderService {
             throw new IllegalStateException("Unknown explorer type");
         });
 
-        // 4. Cache Save
         if (isRedisResponseCacheEnabled) {
             try {
                 PageCacheWrapper wrapper = new PageCacheWrapper(resultPage.getContent(), resultPage.getTotalElements());
                 redisTemplate.opsForValue().set(cacheKey, wrapper, pageCacheDuration);
-                log.info("Successfully cached paginated folder contents for key: {}", cacheKey);
             } catch (Exception e) {
                 log.error("Failed to write paginated cache to Redis for key: {}", cacheKey, e);
             }
@@ -233,18 +225,15 @@ public class FolderServiceImpl implements FolderService {
     
     @Override
     public Page<ExplorerDto> getRootContents(Type typeFilter, Pageable pageable) {
-        // 1. Generate unique cache key
         String typeStr = typeFilter != null ? typeFilter.name() : "ALL";
         String sortStr = pageable.getSort().isSorted() ? pageable.getSort().toString().replace(":", "-").replace(" ", "") : "UNSORTED";
         String cacheKey = String.format("%sroot:type:%s:page:%d:size:%d:sort:%s", 
                 redisFolderPagePrefix, typeStr, pageable.getPageNumber(), pageable.getPageSize(), sortStr);
 
-        // 2. Cache Check
         if (isRedisResponseCacheEnabled) {
             try {
                 PageCacheWrapper cached = (PageCacheWrapper) redisTemplate.opsForValue().get(cacheKey);
                 if (cached != null) {
-                    log.info("Cache hit for paginated root contents: {}", cacheKey);
                     return new PageImpl<>(cached.getContent(), pageable, cached.getTotalElements());
                 }
             } catch (Exception e) {
@@ -252,8 +241,6 @@ public class FolderServiceImpl implements FolderService {
             }
         }
 
-        // 3. DB Fetch
-        log.info("Cache miss. Fetching paginated root contents from DB.");
         Page<Explorer> explorerPage;
         if (typeFilter == null) {
             explorerPage = explorerRepository.findByParentUuidIsNull(pageable);
@@ -271,18 +258,38 @@ public class FolderServiceImpl implements FolderService {
             throw new IllegalStateException("Unknown explorer type");
         });
 
-        // 4. Cache Save
         if (isRedisResponseCacheEnabled) {
             try {
                 PageCacheWrapper wrapper = new PageCacheWrapper(resultPage.getContent(), resultPage.getTotalElements());
                 redisTemplate.opsForValue().set(cacheKey, wrapper, pageCacheDuration);
-                log.info("Successfully cached paginated root contents for key: {}", cacheKey);
             } catch (Exception e) {
                 log.error("Failed to write paginated root cache to Redis for key: {}", cacheKey, e);
             }
         }
 
         return resultPage;
+    }
+    
+    @Override
+    public void evictParentPageCache(UUID parentUuid) {
+        if (!isRedisResponseCacheEnabled) {
+            return;
+        }
+
+        try {
+            String cachePattern;
+            if (parentUuid != null) {
+                cachePattern = redisFolderPagePrefix + "parent:" + parentUuid + ":*";
+            } else {
+                cachePattern = redisFolderPagePrefix + "root:*";
+            }
+            java.util.Set<String> keysToDelete = redisTemplate.keys(cachePattern);
+            if (keysToDelete != null && !keysToDelete.isEmpty()) {
+                redisTemplate.delete(keysToDelete);
+            }
+        } catch (Exception e) {
+            log.error("Failed to evict paginated cache for parent folder: {}", parentUuid, e);
+        }
     }
 
 }
