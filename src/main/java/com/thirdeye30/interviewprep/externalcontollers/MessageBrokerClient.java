@@ -1,0 +1,35 @@
+package com.thirdeye30.interviewprep.externalcontollers;
+
+import java.util.List;
+
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+
+import com.thirdeye30.interviewprep.dtos.CoursePayload;
+import com.thirdeye30.interviewprep.dtos.Message;
+
+
+@FeignClient(
+		name = "MESSAGEBROKER"
+)
+public interface MessageBrokerClient {
+	
+	@GetMapping("/messagebroker/message/multiple/{topicname}/{topickey}/{count}")
+	ResponseEntity<List<Message<CoursePayload>>> getMessages(
+        @PathVariable("topicname") String topicName,
+        @PathVariable("topickey") String topicKey,
+        @PathVariable("count") Long count
+    );
+    
+    @PostMapping("/messagebroker/message/multiple/{topicname}/{topickey}")
+    ResponseEntity<String> setMultipleMessages(
+            @PathVariable("topicname") String topicName,
+            @PathVariable("topickey") String topicKey,
+            @RequestBody Object messages
+    );
+}
+

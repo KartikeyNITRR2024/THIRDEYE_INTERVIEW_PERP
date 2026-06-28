@@ -1,13 +1,18 @@
 package com.thirdeye30.interviewprep.services.impl;
 
 import com.thirdeye30.interviewprep.dtos.ActionStats;
+import com.thirdeye30.interviewprep.dtos.CoursePayload;
 import com.thirdeye30.interviewprep.dtos.ExplorerDto;
+import com.thirdeye30.interviewprep.dtos.Message;
+import com.thirdeye30.interviewprep.dtos.PriorityDto;
 import com.thirdeye30.interviewprep.entities.Explorer;
 import com.thirdeye30.interviewprep.entities.File;
 import com.thirdeye30.interviewprep.entities.Folder;
 import com.thirdeye30.interviewprep.enums.ActionType;
+import com.thirdeye30.interviewprep.enums.Status;
 import com.thirdeye30.interviewprep.repositories.ExplorerRepository;
 import com.thirdeye30.interviewprep.services.ExplorerService;
+import com.thirdeye30.interviewprep.services.MessageBrokerService;
 import com.thirdeye30.interviewprep.utils.Mapper;
 import com.thirdeye30.interviewprep.utils.PageCacheWrapper;
 import com.thirdeye30.interviewprep.utils.Utils;
@@ -19,6 +24,7 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -41,6 +47,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class ExplorerServiceImpl implements ExplorerService {
 
     private final ExplorerRepository explorerRepository;
+    private final MessageBrokerService messageBrokerService;
     private final Utils utils;
     private final JdbcTemplate jdbcTemplate;
     private final RedisTemplate<String, Object> redisTemplate;
@@ -164,4 +171,52 @@ public class ExplorerServiceImpl implements ExplorerService {
             });
         }
     }
+
+	@Override
+	public void createCourses() {
+		List<PriorityDto> payloads = new ArrayList<>();
+		while (true) {
+            try {
+                List<Message<CoursePayload>> messages = messageBrokerService.getPayloadMessage("courseprocesser");
+                if (messages == null || messages.isEmpty()) {
+                    break;
+                }
+                log.info("Processing {} courses", messages.size());
+                for (Message<CoursePayload> message : messages) {
+                    if (message != null && message.getMessage() != null) {
+                    	CoursePayload coursePayload = message.getMessage();
+                    	PriorityDto priorityDto = null;
+                		Map<String, List<List<String>>> coursePath = new LinkedHashMap<>();
+                    	try
+                    	{
+                    		createCoursePath(coursePath, "High Priority", coursePayload.getHighPriority());
+                    		createCoursePath(coursePath, "Medium Priority", coursePayload.getMediumPriority());
+                    		createCoursePath(coursePath, "Low Priority", coursePayload.getLowPriority());
+                    		priorityDto = new PriorityDto(coursePayload.getId(), Status.COURSE_CREATION_COMPLETED, coursePath);
+                    	} catch (Exception ex)
+                    	{
+                    		priorityDto = new PriorityDto(coursePayload.getId(), Status.COURSE_CREATION_FAILED, coursePath);
+                    	}
+                        payloads.add(priorityDto);
+                    }
+                }
+            } catch (Exception ex) {
+                log.error("Error pulling messages from the mail queue", ex);
+                break;
+            }
+        }
+		if(!payloads.isEmpty())
+		{
+			messageBrokerService.sendMultipleMessages("priorityskills", payloads);
+		}
+	}
+	
+	private void createCoursePath(Map<String, List<List<String>>> coursePath, String key, List<String> topics)
+	{
+		coursePath.put(key, new ArrayList<>());
+		for(String topic : topics)
+		{
+			coursePath.get(key).add(List.of(topic, "www.google.com/"+key));
+		}
+	}
 }

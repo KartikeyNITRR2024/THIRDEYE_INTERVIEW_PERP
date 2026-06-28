@@ -14,5 +14,7 @@ public interface ExplorerService {
 	void recordAction(UUID id, ActionType actionType);
 
 	void updateActionInDatabase();
+	
+	void createCourses();
     
 }
